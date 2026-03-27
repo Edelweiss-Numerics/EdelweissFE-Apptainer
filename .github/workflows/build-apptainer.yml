@@ -24,7 +24,7 @@ jobs:
 
       - name: Build Apptainer Image
         run: |
-          apptainer build edelweissfe-debian-13.sif edelweissfe-debian-13.def
+          sudo apptainer build edelweissfe-debian-13.sif edelweissfe-debian-13.def
 
       # This uploads the built .sif container to your GitHub Releases page
       - name: Upload SIF to GitHub Release
