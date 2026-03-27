@@ -1,0 +1,90 @@
+Bootstrap: docker
+From: debian:13
+
+%post
+    # Prevent interactive prompts during apt installs
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Install base dependencies for compiling
+    apt-get update && apt-get install -y \
+        build-essential \
+        cmake \
+        git \
+        curl \
+        wget \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Set up a working directory for building
+    export EWROOT=/opt/edelweiss
+    mkdir -p $EWROOT
+    cd $EWROOT
+
+    # 1. Install Miniforge
+    curl -L -O https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+    bash Miniforge3-Linux-x86_64.sh -b -p /opt/miniforge
+    rm Miniforge3-Linux-x86_64.sh
+
+    # 2. Expose Conda/Mamba to the PATH and set CONDA_PREFIX 
+    export PATH="/opt/miniforge/bin:$PATH"
+    export CONDA_PREFIX="/opt/miniforge"
+
+    # 3. Get EdelweissFE & Install Python requirements
+    # Miniforge includes the 'mamba' command by default, so this works natively
+    cd $EWROOT
+    git clone https://github.com/EdelweissFE/EdelweissFE.git
+    mamba install -y --file EdelweissFE/requirements.txt
+    mamba clean -a -y 
+
+    # 4. Get and Compile Eigen
+    cd $EWROOT
+    git clone --branch 3.4.0 https://gitlab.com/libeigen/eigen.git
+    cd eigen && mkdir build && cd build
+    cmake \
+        -DBUILD_TESTING=OFF \
+        -DINCLUDE_INSTALL_DIR=$CONDA_PREFIX/include \
+        -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
+        ..
+    make install
+
+    # 5. Get and Compile Autodiff
+    cd $EWROOT
+    git clone --branch v1.1.0 https://github.com/autodiff/autodiff.git
+    cd autodiff && mkdir build && cd build
+    cmake \
+        -DAUTODIFF_BUILD_TESTS=OFF \
+        -DAUTODIFF_BUILD_PYTHON=OFF \
+        -DAUTODIFF_BUILD_EXAMPLES=OFF \
+        -DAUTODIFF_BUILD_DOCS=OFF \
+        -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
+        ..
+    make install
+
+    # 6. Get and Compile Fastor
+    cd $EWROOT
+    git clone https://github.com/romeric/Fastor.git
+    cd Fastor
+    cmake -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX .
+    make install
+
+    # 7. Get and Compile Marmot
+    cd $EWROOT
+    git clone --recurse https://github.com/MAteRialMOdelingToolbox/Marmot.git
+    cd Marmot && mkdir build && cd build
+    cmake -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX ..
+    make install
+
+    # 8. Build and install EdelweissFE
+    cd $EWROOT/EdelweissFE
+    pip install .
+
+    # 9. Cleanup source files to drastically reduce the final .sif file size
+    cd /opt
+    rm -rf $EWROOT/eigen $EWROOT/autodiff $EWROOT/Fastor $EWROOT/Marmot $EWROOT/EdelweissFE
+
+%environment
+    # Ensure Conda/Mamba is available on the path at runtime
+    export PATH="/opt/miniforge/bin:$PATH"
+
+%runscript
+    # The default command when running the container
+    exec edelweissfe "$@"

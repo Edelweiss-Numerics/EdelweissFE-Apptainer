@@ -1,0 +1,33 @@
+name: Build EdelweissFE Apptainer
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on version tags (e.g., git tag v1.0.0 && git push origin v1.0.0)
+  workflow_dispatch: # Allows manual triggering from the GitHub UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write 
+      packages: write 
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Apptainer
+        uses: eWaterCycle/setup-apptainer@v2
+        with:
+          apptainer-version: '1.3.0'
+
+      - name: Build Apptainer Image
+        run: |
+          apptainer build edelweissfe-debian-13.sif edelweissfe-debian-13.def
+
+      # This uploads the built .sif container to your GitHub Releases page
+      - name: Upload SIF to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: edelweissfe-debian-13.sif
