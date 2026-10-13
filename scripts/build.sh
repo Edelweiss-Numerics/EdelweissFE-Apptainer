@@ -26,25 +26,21 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_targets.sh"
 parse_target "$@"
 REBUILD_BASE=0
-for arg in "$@"; do [ "$arg" = "--rebuild-base" ] && REBUILD_BASE=1; done
+for arg in "$@"; do
+    case "$arg" in
+        --target=*) ;;
+        --rebuild-base) REBUILD_BASE=1 ;;
+        *) echo "usage: $0 --target=<$TARGETS> [--rebuild-base]" >&2; exit 1 ;;
+    esac
+done
 
-EDELWEISSFE_REPO="${EDELWEISSFE_REPO:-https://github.com/Edelweiss-Numerics/EdelweissFE.git}"
-EDELWEISSFE_BRANCH="${EDELWEISSFE_BRANCH:-next_v26.11}"
-MARMOT_REPO="${MARMOT_REPO:-https://github.com/MAteRialMOdelingToolbox/Marmot.git}"
-MARMOT_BRANCH="${MARMOT_BRANCH:-next_v26.11}"
 MANUAL_MATERIALS="${MANUAL_MATERIALS:-}"
 MANUAL_MATERIALS_DIR="${MANUAL_MATERIALS_DIR:-$APPTAINER_REPO_DIR/../Marmot/modules/materials}"
 export APPTAINER_CACHEDIR="$BUILD_DIR/apptainer-cache"
 mkdir -p "$BUILD_DIR"
 
-resolve() { # <repo> <branch> -> full commit SHA of the branch tip
-    local sha
-    sha=$(git ls-remote "$1" "refs/heads/$2" | cut -f1)
-    [ -n "$sha" ] || { echo "ERROR: branch '$2' not found in $1" >&2; exit 1; }
-    echo "$sha"
-}
-EF_COMMIT=$(resolve "$EDELWEISSFE_REPO" "$EDELWEISSFE_BRANCH")
-MA_COMMIT=$(resolve "$MARMOT_REPO" "$MARMOT_BRANCH")
+EF_COMMIT=$(resolve_commit "$EDELWEISSFE_REPO" "$EDELWEISSFE_BRANCH")
+MA_COMMIT=$(resolve_commit "$MARMOT_REPO" "$MARMOT_BRANCH")
 echo "Target:      $TARGET ($ARCH_FLAGS)"
 echo "EdelweissFE: $EDELWEISSFE_REPO $EDELWEISSFE_BRANCH @ ${EF_COMMIT:0:8}"
 echo "Marmot:      $MARMOT_REPO $MARMOT_BRANCH @ ${MA_COMMIT:0:8}"
@@ -52,10 +48,8 @@ echo "Materials:   ${MANUAL_MATERIALS:-none}"
 
 # The base image is keyed on the edelweissfe-dev version of the commit being
 # built, so a version bump on the branch rebuilds it automatically.
-SRC_DIR=$(mktemp -d)
-trap 'rm -rf "$SRC_DIR"' EXIT
-git clone -q --no-checkout --filter=blob:none --branch "$EDELWEISSFE_BRANCH" "$EDELWEISSFE_REPO" "$SRC_DIR/ef"
-DEV_VERSION=$(git -C "$SRC_DIR/ef" show "$EF_COMMIT:conda/edelweissfe-dev/VERSION" | tr -d '[:space:]')
+DEV_VERSION=$(edelweissfe_dev_version "$EDELWEISSFE_REPO" "$EDELWEISSFE_BRANCH" "$EF_COMMIT")
+[ -n "$DEV_VERSION" ] || { echo "ERROR: no conda/edelweissfe-dev/VERSION at $EDELWEISSFE_REPO @ $EF_COMMIT" >&2; exit 1; }
 BASE_SIF="$BUILD_DIR/edelweissfe-base-$DEV_VERSION.sif"
 if [ "$REBUILD_BASE" -eq 1 ] || [ ! -f "$BASE_SIF" ]; then
     echo "Building base layer (edelweissfe-dev=$DEV_VERSION) -> $BASE_SIF ..."

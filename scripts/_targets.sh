@@ -2,11 +2,12 @@
 # settings, selected by --target=<name>. Source this file, then call
 # load_target <name>.
 #
-# Public cluster facts (CPU, Apptainer module) live here. Who deploys where
-# (login, container directory) is personal and lives in deploy.local.sh at the
-# repository root (git-ignored; copy deploy.local.sh.example), or in the
-# environment: <TARGET>_HOST, <TARGET>_CONTAINER_DIR, MANUAL_MATERIALS,
-# MANUAL_MATERIALS_DIR. The environment wins over deploy.local.sh.
+# Public cluster facts (CPU, Apptainer module) and the upstream sources live
+# here. Who deploys where (login, container directory) is personal and lives
+# in deploy.local.sh at the repository root (git-ignored; copy
+# deploy.local.sh.example), or in the environment: <TARGET>_HOST,
+# <TARGET>_CONTAINER_DIR, MANUAL_MATERIALS, MANUAL_MATERIALS_DIR. The
+# environment wins over deploy.local.sh.
 
 APPTAINER_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$APPTAINER_REPO_DIR/.build}"
@@ -56,6 +57,31 @@ load_target() {
     local host_var="${TARGET^^}_HOST" dir_var="${TARGET^^}_CONTAINER_DIR"
     DEPLOY_HOST="${!host_var:-}"
     DEPLOY_DIR="${!dir_var:-}"
+
+    # The sources to build: the upstream branches unless the environment (or
+    # deploy.local.sh) says otherwise, e.g. a local clone for unpushed work.
+    : "${EDELWEISSFE_REPO:=https://github.com/Edelweiss-Numerics/EdelweissFE.git}"
+    : "${EDELWEISSFE_BRANCH:=next_v26.11}"
+    : "${MARMOT_REPO:=https://github.com/MAteRialMOdelingToolbox/Marmot.git}"
+    : "${MARMOT_BRANCH:=next_v26.11}"
+}
+
+# Prints the full commit SHA of branch $2's tip in repository $1.
+resolve_commit() {
+    local sha
+    sha=$(git ls-remote "$1" "refs/heads/$2" | cut -f1)
+    [ -n "$sha" ] || { echo "ERROR: branch '$2' not found in $1" >&2; exit 1; }
+    echo "$sha"
+}
+
+# Prints the edelweissfe-dev version that commit $3 (on branch $2) of
+# EdelweissFE repository $1 pins, without cloning any blobs but that file.
+edelweissfe_dev_version() {
+    local src
+    src=$(mktemp -d)
+    git clone -q --no-checkout --filter=blob:none --branch "$2" "$1" "$src"
+    git -C "$src" show "$3:conda/edelweissfe-dev/VERSION" | tr -d '[:space:]'
+    rm -rf "$src"
 }
 
 # Parses --target=<name> out of "$@" (default: generic) and calls load_target.
@@ -78,8 +104,9 @@ remote_container_exec() {
 
 require_deploy_config() {
     if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_DIR" ]; then
-        echo "ERROR: no deploy host/directory for target '$TARGET'. Set ${TARGET^^}_HOST and" \
-             "${TARGET^^}_CONTAINER_DIR in deploy.local.sh (see deploy.local.sh.example)." >&2
+        echo "ERROR: no deploy host/directory for target '$TARGET'. Pass --target=<leo5|leo4|vsc5>" \
+             "and set ${TARGET^^}_HOST and ${TARGET^^}_CONTAINER_DIR in deploy.local.sh" \
+             "(see deploy.local.sh.example)." >&2
         exit 1
     fi
 }

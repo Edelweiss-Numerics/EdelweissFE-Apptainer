@@ -49,12 +49,8 @@ echo "Copied, sha256 $SRC_SUM"
 echo "Smoke-testing on $TARGET's login node ..."
 LATEST="$DEPLOY_DIR/edelweissfe-latest.sif"
 remote_container_exec "$LATEST" edelweissfe --help >/dev/null
-remote_container_exec "$LATEST" env PYTHON_GIL=0 OMP_NUM_THREADS=1 python -c "\"
-import sys
-import edelweissfe.elements.marmotelement.element
-import edelweissfe.linsolve.amgcl.amgcl
-import edelweissfe.linsolve.pardiso.pardiso
-assert not sys._is_gil_enabled(), 'GIL re-enabled by an import'
-\""
+# ssh forwards stdin, so the test program travels without remote quoting.
+remote_container_exec "$LATEST" env PYTHON_GIL=0 OMP_NUM_THREADS=1 python - \
+    < "$APPTAINER_REPO_DIR/scripts/smoke_test.py"
 remote_container_exec "$LATEST" cat /opt/build_info.txt
 echo "Deployed: edelweissfe-latest.sif -> $NAME (CLI, Marmot/AMGCL/Pardiso imports and free threading OK)"
