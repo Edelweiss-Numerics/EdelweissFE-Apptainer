@@ -12,9 +12,10 @@ From: debian:13
 # Rebuild this layer ONLY when the edelweissfe-dev version changes
 # (EdelweissFE/conda/edelweissfe-dev/VERSION) -- otherwise
 # edelweissfe-debian-13.def layers on top of the cached result via
-# `Bootstrap: localimage`. scripts/build.sh passes the version
-# of the EdelweissFE branch being built (--build-arg) and keys the cached base
-# image on it; the default below is what CI builds, keep it in sync.
+# `Bootstrap: localimage`. scripts/build.sh and CI pass the version of the
+# EdelweissFE commit being built (--build-arg) and key the cached base image on
+# it; the top layer refuses a base image of any other version. The default
+# below only serves a bare `apptainer build`.
 
 %arguments
     EDELWEISSFE_DEV_VERSION=2026.10.04
@@ -44,5 +45,10 @@ From: debian:13
     echo "edelweissfe-dev: {{ EDELWEISSFE_DEV_VERSION }}" > /opt/base_info.txt
 
 %environment
+    # Inherited by edelweissfe-debian-13.def (localimage keeps this file). The
+    # pinned environment first on PATH is enough to run: no activation needed,
+    # the Marmot extensions find libMarmot via their embedded library path.
+    # OMP_NUM_THREADS and PYTHON_GIL are per job (README, "Running on an HPC
+    # cluster"), not baked in.
     export PATH="/opt/edelweissfe-env/bin:/opt/miniforge/bin:$PATH"
     export CONDA_PREFIX="/opt/edelweissfe-env"

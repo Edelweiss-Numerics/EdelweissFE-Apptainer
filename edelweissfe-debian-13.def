@@ -21,6 +21,8 @@ From: {{ BASE_IMAGE }}
     # any x86 CPU from the last decade; scripts/build.sh passes the exact CPU
     # of the target cluster instead.
     ARCH_FLAGS=-march=x86-64-v3
+    # scripts/_targets.sh holds the same repositories and branches for the
+    # scripts and CI; bump both.
     EDELWEISSFE_REPO=https://github.com/Edelweiss-Numerics/EdelweissFE.git
     EDELWEISSFE_BRANCH=next_v26.11
     # A commit on EDELWEISSFE_BRANCH to check out; empty means the branch tip.
@@ -58,17 +60,22 @@ From: {{ BASE_IMAGE }}
 
     # 1. Get EdelweissFE
     cd $EWROOT
-    git clone --branch {{ EDELWEISSFE_BRANCH }} {{ EDELWEISSFE_REPO }} EdelweissFE
+    git clone --branch "{{ EDELWEISSFE_BRANCH }}" "{{ EDELWEISSFE_REPO }}" EdelweissFE
     if [ -n "{{ EDELWEISSFE_COMMIT }}" ]; then
-        git -C EdelweissFE checkout --detach {{ EDELWEISSFE_COMMIT }}
+        git -C EdelweissFE checkout --detach "{{ EDELWEISSFE_COMMIT }}"
     fi
+    # 1a. The base layer must hold the environment this commit pins; building
+    #     against another version's pins fails late or silently misbehaves.
+    WANT="edelweissfe-dev: $(tr -d '[:space:]' < EdelweissFE/conda/edelweissfe-dev/VERSION)"
+    grep -qx "$WANT" /opt/base_info.txt \
+        || { echo "FATAL: base image has '$(cat /opt/base_info.txt)', the EdelweissFE commit needs '$WANT'"; exit 1; }
 
     # 2. Get and compile Marmot for ARCH_FLAGS (MARMOT_MARCH_NATIVE stays OFF
     #    -- it would target the build machine's CPU instead).
     cd $EWROOT
-    git clone --branch {{ MARMOT_BRANCH }} {{ MARMOT_REPO }} Marmot
+    git clone --branch "{{ MARMOT_BRANCH }}" "{{ MARMOT_REPO }}" Marmot
     if [ -n "{{ MARMOT_COMMIT }}" ]; then
-        git -C Marmot checkout --detach {{ MARMOT_COMMIT }}
+        git -C Marmot checkout --detach "{{ MARMOT_COMMIT }}"
     fi
     git -C Marmot submodule update --init --recursive
 
@@ -89,13 +96,20 @@ From: {{ BASE_IMAGE }}
             echo "FATAL: requested material '$name' not found at $src"
             exit 1
         fi
+        # cp into an existing directory nests the copy, which CMake's glob
+        # then never sees -- the image would silently lack the material.
+        if [ -e "$dest" ]; then
+            echo "FATAL: material '$name' already exists in the Marmot checkout at $dest"
+            exit 1
+        fi
         cp -r "$src" "$dest"
         echo "Included manually-cloned material: $name"
     done
 
     cd Marmot && mkdir build && cd build
-    # CXXFLAGS is empty unless conda's compiler activation ran; it carries no -march.
-    # the package registry is off so nothing outside the environment is found.
+    # Keep conda's CXXFLAGS (hardening, -O2 and a baseline -march=nocona) and
+    # append ARCH_FLAGS: GCC takes the last -march/-mtune. The package registry
+    # is off so nothing outside the environment is found.
     cmake \
         -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
         -DCMAKE_PREFIX_PATH=$CONDA_PREFIX \
@@ -127,8 +141,14 @@ From: {{ BASE_IMAGE }}
     BUILD_LOG=$(python -c "import edelweissfe, pathlib; print(pathlib.Path(edelweissfe.__file__).parent / 'built_extensions.log')")
     echo "Checking $BUILD_LOG for required extensions:"
     cat "$BUILD_LOG"
-    for ext in marmotelement marmothypoelastic marmotgradientenhancedhypoelastic amgcl pardiso; do
-        grep -q "$ext" "$BUILD_LOG" || { echo "FATAL: required extension '$ext' failed to build"; exit 1; }
+    # Whole-line matches: `pardiso` alone would also accept the optional
+    # panuapardiso binding.
+    for ext in edelweissfe.elements.marmotelement.element \
+               edelweissfe.materials.marmot.marmothypoelastic \
+               edelweissfe.materials.marmot.marmotgradientenhancedhypoelastic \
+               edelweissfe.linsolve.amgcl.amgcl \
+               edelweissfe.linsolve.pardiso.pardiso; do
+        grep -qx "$ext" "$BUILD_LOG" || { echo "FATAL: required extension '$ext' failed to build"; exit 1; }
     done
 
     # 4. Stamp build provenance before the source trees are wiped -- lets
@@ -150,15 +170,7 @@ From: {{ BASE_IMAGE }}
     cd /opt
     rm -rf $EWROOT/Marmot $EWROOT/EdelweissFE
 
-%environment
-    # The pinned environment first on PATH at runtime. Full activation is not
-    # needed to run: the Marmot extensions find libMarmot via their embedded
-    # library path (EdelweissFE records the install dir at build time).
-    export PATH="/opt/edelweissfe-env/bin:/opt/miniforge/bin:$PATH"
-    export CONDA_PREFIX="/opt/edelweissfe-env"
-    # OMP_NUM_THREADS and PYTHON_GIL must be set per job (see README.md,
-    # "Running on an HPC cluster") -- not baked in here, since the right
-    # thread count depends on the job's allocation.
+# No %environment: the base image's (PATH, CONDA_PREFIX) is inherited.
 
 %runscript
     # The default command when running the container
