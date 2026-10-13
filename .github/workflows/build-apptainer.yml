@@ -3,54 +3,67 @@ name: Build EdelweissFE Apptainer
 on:
   push:
     tags:
-      - 'v*' # Trigger on version tags (e.g., git tag v1.0.0 && git push origin v1.0.0)
-  workflow_dispatch: # Allows manual triggering from the GitHub UI
+      - 'v*' # Release: git tag v1.0.0 && git push origin v1.0.0
+  pull_request: # Build + smoke test only, nothing is released
+  workflow_dispatch: # Manual trigger from the GitHub UI
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write 
-      packages: write 
+      contents: write
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # %arguments / --build-arg need Apptainer >= 1.2.
       - name: Setup Apptainer
         uses: eWaterCycle/setup-apptainer@v2
         with:
           apptainer-version: '1.3.0'
 
-      # The base layer (the pinned edelweissfe-dev conda environment) is the
-      # slow part and only changes when edelweissfe-base.def itself does (its
-      # %arguments default pins the version) -- cache it so
+      # The base layer must hold the edelweissfe-dev version the EdelweissFE
+      # branch pins (the top layer refuses any other); read it from the branch
+      # like scripts/build.sh does.
+      - name: Resolve edelweissfe-dev version
+        id: dev
+        run: |
+          source scripts/_targets.sh && load_target generic
+          commit=$(resolve_commit "$EDELWEISSFE_REPO" "$EDELWEISSFE_BRANCH")
+          version=$(edelweissfe_dev_version "$EDELWEISSFE_REPO" "$EDELWEISSFE_BRANCH" "$commit")
+          echo "edelweissfe-dev $version (EdelweissFE $EDELWEISSFE_BRANCH @ $commit)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The base layer (the pinned conda environment) is the slow part and only
+      # changes with that version or edelweissfe-base.def -- cache it so
       # routine EdelweissFE/Marmot bumps don't pay that cost on every run.
       - name: Cache base image
         id: cache-base
         uses: actions/cache@v4
         with:
           path: edelweissfe-base.sif
-          key: edelweissfe-base-${{ hashFiles('edelweissfe-base.def') }}
+          key: edelweissfe-base-${{ steps.dev.outputs.version }}-${{ hashFiles('edelweissfe-base.def') }}
 
       - name: Build base image
         if: steps.cache-base.outputs.cache-hit != 'true'
         run: |
-          apptainer build edelweissfe-base.sif edelweissfe-base.def
+          apptainer build --build-arg EDELWEISSFE_DEV_VERSION=${{ steps.dev.outputs.version }} \
+            edelweissfe-base.sif edelweissfe-base.def
 
       - name: Build Apptainer Image
         run: |
           apptainer build edelweissfe-debian-13.sif edelweissfe-debian-13.def
 
-      # Catches a broken image (e.g. a missing Marmot-backed extension, see
-      # edelweissfe-debian-13.def's build-log check) before it ever reaches
-      # a Release.
+      # Same test scripts/deploy.sh runs on a cluster: CLI, Marmot-backed and
+      # solver extensions, free threading.
       - name: Smoke test image
         run: |
           apptainer exec edelweissfe-debian-13.sif edelweissfe --help
+          apptainer exec edelweissfe-debian-13.sif env PYTHON_GIL=0 OMP_NUM_THREADS=1 python - < scripts/smoke_test.py
 
-      # This uploads the built .sif container to your GitHub Releases page
       - name: Upload SIF to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: edelweissfe-debian-13.sif

@@ -76,7 +76,8 @@ machine than the one it runs on. `scripts/_targets.sh` holds the targets:
 
 An image built for an AVX-512 CPU dies with `SIGILL` on a CPU without it.
 
-Build on a Linux machine with Apptainer (`--fakeroot` builds), not on the cluster:
+Build on a Linux machine with Apptainer >= 1.2 (`%arguments`/`--build-arg`, `--fakeroot`
+builds), not on the cluster:
 
 ```bash
 cp deploy.local.sh.example deploy.local.sh    # once: your logins, container directories, materials
@@ -93,8 +94,9 @@ scripts/check_deployed.sh --target=vsc5       # upstream tips vs. the deployed i
   `edelweissfe-dev` version changes, or with `--rebuild-base`. Don't run two builds at
   once: they share `.build/apptainer-cache`.
 * `deploy.sh` copies the image to `<TARGET>_CONTAINER_DIR`, checks the checksum, points
-  `edelweissfe-latest.sif` at it and smoke-tests it on the login node (CLI, Marmot/AMGCL/
-  Pardiso imports, free threading). With `--via-host=<build-host>` it streams an image
+  `edelweissfe-latest.sif` at it and smoke-tests it on the login node (CLI, then
+  `scripts/smoke_test.py`: Marmot/AMGCL/Pardiso imports, free threading; CI runs the same
+  test on the release image). With `--via-host=<build-host>` it streams an image
   that lives on the build host through the machine you run it on -- for clusters the
   build host cannot log in to (e.g. two-factor login with a ControlMaster connection).
 * **Access-controlled Marmot materials** (e.g. `GCDP`, `CDP`) are deliberately not
