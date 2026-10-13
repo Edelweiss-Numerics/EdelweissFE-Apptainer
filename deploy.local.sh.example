@@ -1,0 +1,17 @@
+# Personal deploy settings for scripts/build.sh, deploy.sh and check_deployed.sh.
+# Copy to deploy.local.sh (git-ignored) and fill in. Use the := form so that
+# variables already set in the environment win.
+
+# Per target: the ssh login (a ~/.ssh/config alias works) and the directory
+# that holds the images and the edelweissfe-latest.sif symlink. Use paths on
+# the cluster's large work filesystem, not $HOME.
+: "${LEO5_HOST:=<user>@leo5.uibk.ac.at}"
+: "${LEO5_CONTAINER_DIR:=/scratch/<user>/containers}"
+: "${LEO4_HOST:=<user>@leo4.uibk.ac.at}"
+: "${LEO4_CONTAINER_DIR:=/scratch/<user>/containers}"
+: "${VSC5_HOST:=vsc5}"
+: "${VSC5_CONTAINER_DIR:=/gpfs/data/<project>/<user>/containers}"
+
+# Access-controlled Marmot materials to build in, and where their clones live.
+: "${MANUAL_MATERIALS:=}"
+: "${MANUAL_MATERIALS_DIR:=$APPTAINER_REPO_DIR/../Marmot/modules/materials}"

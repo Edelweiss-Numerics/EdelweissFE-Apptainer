@@ -1,0 +1,54 @@
+Bootstrap: docker
+From: debian:13
+
+# Base layer: Debian + Miniforge + the pinned EdelweissFE development environment.
+#
+# The environment is EdelweissFE's own `edelweissfe-dev` meta-package from the
+# Edelweiss conda channel: it pins every package (Python 3.14 free-threaded,
+# compilers, cmake, MKL, vtk/pyvista, SuiteSparse, Boost, and Marmot's header-only
+# dependencies Eigen/autodiff/Fastor plus AMGCL) exactly as EdelweissFE's
+# conda-lock.yml does. Nothing is built from source here any more.
+#
+# Rebuild this layer ONLY when the edelweissfe-dev version changes
+# (EdelweissFE/conda/edelweissfe-dev/VERSION) -- otherwise
+# edelweissfe-debian-13.def layers on top of the cached result via
+# `Bootstrap: localimage`. scripts/build.sh and CI pass the version of the
+# EdelweissFE commit being built (--build-arg) and key the cached base image on
+# it; the top layer refuses a base image of any other version. The default
+# below only serves a bare `apptainer build`.
+
+%arguments
+    EDELWEISSFE_DEV_VERSION=2026.10.04
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    # Only what conda does not provide: git (cloning) and curl (Miniforge).
+    # Compilers, cmake and make come from the conda environment.
+    apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        && rm -rf /var/lib/apt/lists/*
+
+    # 1. Install Miniforge
+    curl -L -O https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+    bash Miniforge3-Linux-x86_64.sh -b -p /opt/miniforge
+    rm Miniforge3-Linux-x86_64.sh
+
+    # 2. Create the pinned environment at a fixed prefix (EdelweissFE README,
+    #    "Create the EdelweissFE environment").
+    /opt/miniforge/bin/conda create -y -p /opt/edelweissfe-env \
+        -c https://repo.prefix.dev/matthiasneuner/edelweiss -c conda-forge \
+        edelweissfe-dev={{ EDELWEISSFE_DEV_VERSION }}
+    /opt/miniforge/bin/conda clean -a -y
+
+    echo "edelweissfe-dev: {{ EDELWEISSFE_DEV_VERSION }}" > /opt/base_info.txt
+
+%environment
+    # Inherited by edelweissfe-debian-13.def (localimage keeps this file). The
+    # pinned environment first on PATH is enough to run: no activation needed,
+    # the Marmot extensions find libMarmot via their embedded library path.
+    # OMP_NUM_THREADS and PYTHON_GIL are per job (README, "Running on an HPC
+    # cluster"), not baked in.
+    export PATH="/opt/edelweissfe-env/bin:/opt/miniforge/bin:$PATH"
+    export CONDA_PREFIX="/opt/edelweissfe-env"

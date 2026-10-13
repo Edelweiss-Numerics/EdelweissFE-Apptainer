@@ -1,0 +1,3 @@
+.build/
+*.sif
+deploy.local.sh

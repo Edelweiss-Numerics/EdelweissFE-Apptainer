@@ -1,89 +1,176 @@
-Bootstrap: docker
-From: debian:13
+Bootstrap: localimage
+From: {{ BASE_IMAGE }}
+
+# Top layer: Marmot + EdelweissFE, built on top of the cached base image
+# (edelweissfe-base.def -- Debian + the pinned edelweissfe-dev conda
+# environment, which already contains compilers, Eigen/autodiff/Fastor/AMGCL).
+# This is the part that changes routinely (new EdelweissFE/Marmot commits) and
+# is deliberately kept cheap to rebuild: no conda solve, no re-downloading
+# mkl/vtk/pyvista.
+#
+# Every input is a build argument (`apptainer build --build-arg KEY=VALUE`);
+# the defaults below are what CI builds. scripts/build.sh sets them per target
+# cluster and pins both repositories to the commits it resolved.
+
+%arguments
+    # The base image, built from edelweissfe-base.def.
+    BASE_IMAGE=edelweissfe-base.sif
+    # Target CPU for the compiled hot paths (Marmot and EdelweissFE's Cython
+    # extensions). Never -march=native: the image is built on a different
+    # machine than the one it runs on. The default x86-64-v3 (AVX2/FMA) runs on
+    # any x86 CPU from the last decade; scripts/build.sh passes the exact CPU
+    # of the target cluster instead.
+    ARCH_FLAGS=-march=x86-64-v3
+    # scripts/_targets.sh holds the same repositories and branches for the
+    # scripts and CI; bump both.
+    EDELWEISSFE_REPO=https://github.com/Edelweiss-Numerics/EdelweissFE.git
+    EDELWEISSFE_BRANCH=next_v26.11
+    # A commit on EDELWEISSFE_BRANCH to check out; empty means the branch tip.
+    EDELWEISSFE_COMMIT=
+    MARMOT_REPO=https://github.com/MAteRialMOdelingToolbox/Marmot.git
+    MARMOT_BRANCH=next_v26.11
+    MARMOT_COMMIT=
+    # Space-separated access-controlled Marmot materials (e.g. "GCDP CDP") to
+    # copy from /opt/build-mounts/marmot-materials, which the build must
+    # bind-mount. Empty for the public build. See step 2a.
+    MANUAL_MATERIALS=
+
+%setup
+    # Build-time bind mounts need existing mount points (scripts/build.sh binds
+    # the access-controlled materials, and local repositories, here). Not under
+    # /mnt: installations may bind the host's /mnt by default, hiding them.
+    mkdir -p "$APPTAINER_ROOTFS/opt/build-mounts/marmot-materials" \
+        "$APPTAINER_ROOTFS/opt/build-mounts/edelweissfe-repo" "$APPTAINER_ROOTFS/opt/build-mounts/marmot-repo"
 
 %post
-    # Prevent interactive prompts during apt installs
-    export DEBIAN_FRONTEND=noninteractive
-
-    # Install base dependencies for compiling
-    apt-get update && apt-get install -y \
-        build-essential \
-        cmake \
-        git \
-        curl \
-        wget \
-        && rm -rf /var/lib/apt/lists/*
-
-    # Set up a working directory for building
     export EWROOT=/opt/edelweiss
     mkdir -p $EWROOT
     cd $EWROOT
+    # Activate the environment, not just PATH: its bin/ provides conda's GCC
+    # (plain gcc/g++, picked up by cmake and setuptools; there is no system
+    # compiler in the image), and edelweissfe-dev's activation script sets
+    # PIP_NO_BUILD_ISOLATION=0 so pip builds against the environment's
+    # Cython/NumPy instead of fetching copies from PyPI.
+    . /opt/miniforge/etc/profile.d/conda.sh
+    conda activate /opt/edelweissfe-env
+    echo "CONDA_PREFIX=$CONDA_PREFIX g++=$(command -v g++) PIP_NO_BUILD_ISOLATION=${PIP_NO_BUILD_ISOLATION:-unset}"
 
-    # 1. Install Miniforge
-    curl -L -O https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
-    bash Miniforge3-Linux-x86_64.sh -b -p /opt/miniforge
-    rm Miniforge3-Linux-x86_64.sh
+    export ARCH_FLAGS="{{ ARCH_FLAGS }}"
+    export MANUAL_MATERIALS="{{ MANUAL_MATERIALS }}"
 
-    # 2. Expose Conda/Mamba to the PATH and set CONDA_PREFIX 
-    export PATH="/opt/miniforge/bin:$PATH"
-    export CONDA_PREFIX="/opt/miniforge"
-
-    # 3. Get EdelweissFE & Install Python requirements
-    # Miniforge includes the 'mamba' command by default, so this works natively
+    # 1. Get EdelweissFE
     cd $EWROOT
-    git clone https://github.com/EdelweissFE/EdelweissFE.git
-    mamba install -y --file EdelweissFE/requirements.txt
-    mamba clean -a -y 
+    git clone --branch "{{ EDELWEISSFE_BRANCH }}" "{{ EDELWEISSFE_REPO }}" EdelweissFE
+    if [ -n "{{ EDELWEISSFE_COMMIT }}" ]; then
+        git -C EdelweissFE checkout --detach "{{ EDELWEISSFE_COMMIT }}"
+    fi
+    # 1a. The base layer must hold the environment this commit pins; building
+    #     against another version's pins fails late or silently misbehaves.
+    WANT="edelweissfe-dev: $(tr -d '[:space:]' < EdelweissFE/conda/edelweissfe-dev/VERSION)"
+    grep -qx "$WANT" /opt/base_info.txt \
+        || { echo "FATAL: base image has '$(cat /opt/base_info.txt)', the EdelweissFE commit needs '$WANT'"; exit 1; }
 
-    # 4. Get and Compile Eigen
+    # 2. Get and compile Marmot for ARCH_FLAGS (MARMOT_MARCH_NATIVE stays OFF
+    #    -- it would target the build machine's CPU instead).
     cd $EWROOT
-    git clone --branch 3.4.0 https://gitlab.com/libeigen/eigen.git
-    cd eigen && mkdir build && cd build
-    cmake \
-        -DBUILD_TESTING=OFF \
-        -DINCLUDE_INSTALL_DIR=$CONDA_PREFIX/include \
-        -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
-        ..
-    make install
+    git clone --branch "{{ MARMOT_BRANCH }}" "{{ MARMOT_REPO }}" Marmot
+    if [ -n "{{ MARMOT_COMMIT }}" ]; then
+        git -C Marmot checkout --detach "{{ MARMOT_COMMIT }}"
+    fi
+    git -C Marmot submodule update --init --recursive
 
-    # 5. Get and Compile Autodiff
-    cd $EWROOT
-    git clone --branch v1.1.0 https://github.com/autodiff/autodiff.git
-    cd autodiff && mkdir build && cd build
-    cmake \
-        -DAUTODIFF_BUILD_TESTS=OFF \
-        -DAUTODIFF_BUILD_PYTHON=OFF \
-        -DAUTODIFF_BUILD_EXAMPLES=OFF \
-        -DAUTODIFF_BUILD_DOCS=OFF \
-        -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
-        ..
-    make install
+    # 2a. Some Marmot materials (e.g. GCDP) are access-controlled and
+    #     deliberately NOT git submodules -- they're cloned by hand into
+    #     modules/materials/<Name> and auto-detected by Marmot's CMake
+    #     globbing. A local build (scripts/build.sh) bind-mounts a directory
+    #     holding such clones at /opt/build-mounts/marmot-materials and names
+    #     the ones to include; the public CI build includes none.
+    #
+    #     Deliberately opt-in by name, not "copy everything present" -- that
+    #     directory can hold in-progress/incompatible materials that would
+    #     break the build if pulled in blindly.
+    for name in $MANUAL_MATERIALS; do
+        src="/opt/build-mounts/marmot-materials/$name"
+        dest="$EWROOT/Marmot/modules/materials/$name"
+        if [ ! -d "$src" ]; then
+            echo "FATAL: requested material '$name' not found at $src"
+            exit 1
+        fi
+        # cp into an existing directory nests the copy, which CMake's glob
+        # then never sees -- the image would silently lack the material.
+        if [ -e "$dest" ]; then
+            echo "FATAL: material '$name' already exists in the Marmot checkout at $dest"
+            exit 1
+        fi
+        cp -r "$src" "$dest"
+        echo "Included manually-cloned material: $name"
+    done
 
-    # 6. Get and Compile Fastor
-    cd $EWROOT
-    git clone https://github.com/romeric/Fastor.git
-    cd Fastor
-    cmake -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX .
-    make install
-
-    # 7. Get and Compile Marmot
-    cd $EWROOT
-    git clone --recurse https://github.com/MAteRialMOdelingToolbox/Marmot.git
     cd Marmot && mkdir build && cd build
-    cmake -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX ..
-    make install
+    # Keep conda's CXXFLAGS (hardening, -O2 and a baseline -march=nocona) and
+    # append ARCH_FLAGS: GCC takes the last -march/-mtune. The package registry
+    # is off so nothing outside the environment is found.
+    cmake \
+        -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
+        -DCMAKE_PREFIX_PATH=$CONDA_PREFIX \
+        -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF \
+        -DCMAKE_CXX_FLAGS="${CXXFLAGS:-} $ARCH_FLAGS" \
+        ..
+    # Marmot's heavily templated Eigen/Fastor translation units need several GB
+    # each; a flat -j$(nproc) gets cc1plus OOM-killed on build hosts with many
+    # cores but little free memory. Size the parallelism off the memory that is
+    # available, budgeting ~6 GB per job, capped at the core count.
+    MARMOT_BUILD_JOBS=$(( $(awk '/MemAvailable/{printf "%d", $2/1024/1024}' /proc/meminfo) / 6 ))
+    [ "$MARMOT_BUILD_JOBS" -lt 1 ] && MARMOT_BUILD_JOBS=1
+    [ "$MARMOT_BUILD_JOBS" -gt "$(nproc)" ] && MARMOT_BUILD_JOBS="$(nproc)"
+    echo "Building Marmot with -j$MARMOT_BUILD_JOBS (sized off available memory)"
+    make -j"$MARMOT_BUILD_JOBS" install
 
-    # 8. Build and install EdelweissFE
+    # 3. Build and install EdelweissFE, linked against Marmot
     cd $EWROOT/EdelweissFE
-    pip install .
+    export MARMOT_INSTALL_DIR=$CONDA_PREFIX
+    export EDELWEISSFE_ARCH_FLAGS="$ARCH_FLAGS"
+    pip install --no-build-isolation -v .
 
-    # 9. Cleanup source files to drastically reduce the final .sif file size
+    # 3a. setup.py's optional_build_ext lets any single Cython extension fail
+    #     without aborting the whole `pip install`, logging successes to
+    #     built_extensions.log instead. A container whose whole purpose is
+    #     running Marmot-backed materials must not silently ship without the
+    #     Marmot element/material wrappers or the linear solvers -- fail the
+    #     image build hard if any of them is missing.
+    BUILD_LOG=$(python -c "import edelweissfe, pathlib; print(pathlib.Path(edelweissfe.__file__).parent / 'built_extensions.log')")
+    echo "Checking $BUILD_LOG for required extensions:"
+    cat "$BUILD_LOG"
+    # Whole-line matches: `pardiso` alone would also accept the optional
+    # panuapardiso binding.
+    for ext in edelweissfe.elements.marmotelement.element \
+               edelweissfe.materials.marmot.marmothypoelastic \
+               edelweissfe.materials.marmot.marmotgradientenhancedhypoelastic \
+               edelweissfe.linsolve.amgcl.amgcl \
+               edelweissfe.linsolve.pardiso.pardiso; do
+        grep -qx "$ext" "$BUILD_LOG" || { echo "FATAL: required extension '$ext' failed to build"; exit 1; }
+    done
+
+    # 4. Stamp build provenance before the source trees are wiped -- lets
+    #    `apptainer exec <sif> cat /opt/build_info.txt` answer "what's
+    #    actually in this image" without re-cloning anything.
+    {
+        echo "Build date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        cat /opt/base_info.txt
+        echo "Arch flags: $ARCH_FLAGS"
+        echo "EdelweissFE branch: {{ EDELWEISSFE_BRANCH }}"
+        echo "EdelweissFE commit: $(git -C $EWROOT/EdelweissFE rev-parse HEAD)"
+        echo "Marmot branch: {{ MARMOT_BRANCH }}"
+        echo "Marmot commit: $(git -C $EWROOT/Marmot rev-parse HEAD)"
+        echo "Manually-cloned materials included: ${MANUAL_MATERIALS:-none}"
+    } > /opt/build_info.txt
+    cat /opt/build_info.txt
+
+    # 5. Cleanup source files to drastically reduce the final .sif file size
     cd /opt
-    rm -rf $EWROOT/eigen $EWROOT/autodiff $EWROOT/Fastor $EWROOT/Marmot $EWROOT/EdelweissFE
+    rm -rf $EWROOT/Marmot $EWROOT/EdelweissFE
 
-%environment
-    # Ensure Conda/Mamba is available on the path at runtime
-    export PATH="/opt/miniforge/bin:$PATH"
+# No %environment: the base image's (PATH, CONDA_PREFIX) is inherited.
 
 %runscript
     # The default command when running the container
