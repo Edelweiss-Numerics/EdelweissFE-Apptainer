@@ -22,9 +22,32 @@ jobs:
         with:
           apptainer-version: '1.3.0'
 
+      # The base layer (the pinned edelweissfe-dev conda environment) is the
+      # slow part and only changes when edelweissfe-base.def itself does (its
+      # %arguments default pins the version) -- cache it so
+      # routine EdelweissFE/Marmot bumps don't pay that cost on every run.
+      - name: Cache base image
+        id: cache-base
+        uses: actions/cache@v4
+        with:
+          path: edelweissfe-base.sif
+          key: edelweissfe-base-${{ hashFiles('edelweissfe-base.def') }}
+
+      - name: Build base image
+        if: steps.cache-base.outputs.cache-hit != 'true'
+        run: |
+          apptainer build edelweissfe-base.sif edelweissfe-base.def
+
       - name: Build Apptainer Image
         run: |
           apptainer build edelweissfe-debian-13.sif edelweissfe-debian-13.def
+
+      # Catches a broken image (e.g. a missing Marmot-backed extension, see
+      # edelweissfe-debian-13.def's build-log check) before it ever reaches
+      # a Release.
+      - name: Smoke test image
+        run: |
+          apptainer exec edelweissfe-debian-13.sif edelweissfe --help
 
       # This uploads the built .sif container to your GitHub Releases page
       - name: Upload SIF to GitHub Release
