@@ -23,6 +23,11 @@ jobs:
         with:
           apptainer-version: '1.3.0'
 
+      # Ubuntu 24.04 runners forbid unprivileged user namespaces via AppArmor;
+      # unprivileged Apptainer needs them ("Failed to create mount namespace").
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       # The base layer must hold the edelweissfe-dev version the EdelweissFE
       # branch pins (the top layer refuses any other); read it from the branch
       # like scripts/build.sh does.
